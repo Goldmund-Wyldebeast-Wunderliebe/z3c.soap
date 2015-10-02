@@ -18,7 +18,7 @@ from cgi import FieldStorage, escape
 from ZPublisher.Converters import get_converter
 from ZPublisher.HTTPRequest import *
 from z3c.soap.interfaces import ISOAPRequest
-from ZPublisher.TaintedString import TaintedString
+from AccessControl.tainted import TaintedString
 from zope.interface import directlyProvides
 xmlrpc=None # Placeholder for module that we'll import if we have to.
 soap=None
@@ -47,16 +47,23 @@ def processInputs(
         environ=self.environ
         method=environ.get('REQUEST_METHOD','GET')
 
-        if method != 'GET': fp=self.stdin
-        else:               fp=None
+        if method != 'GET':
+            fp = self.stdin
+        else:
+            fp = None
 
         form=self.form
         other=self.other
         taintedform=self.taintedform
 
+        # If 'QUERY_STRING' is not present in environ
+        # FieldStorage will try to get it from sys.argv[1]
+        # which is not what we need.
+        if not environ.has_key('QUERY_STRING'):
+            environ['QUERY_STRING'] = ''
 
         meth=None
-        fs=FieldStorage(fp=fp,environ=environ,keep_blank_values=1)
+        fs = ZopeFieldStorage(fp=fp,environ=environ,keep_blank_values=1)
         if not hasattr(fs,'list') or fs.list is None:
             contentType = None
             if fs.headers.has_key('content-type'):
@@ -92,6 +99,8 @@ def processInputs(
                 response._error_format = 'text/xml'
                 other['RESPONSE'] = self.response = response
                 other['REQUEST_METHOD'] = method
+                # Stash XML request for interpretation by a SOAP-aware view
+                other['SOAPXML'] = fs.value
                 self.maybe_webdav_client = 0
 
             # Hm, maybe it's an XML-RPC
@@ -150,8 +159,10 @@ def processInputs(
                 l=key.rfind(':')
                 if l >= 0:
                     mo = search_type(key,l)
-                    if mo: l=mo.start(0)
-                    else:  l=-1
+                    if mo:
+                        l = mo.start(0)
+                    else:
+                        l = -1
 
                     while l >= 0:
                         type_name=key[l+1:]
@@ -168,13 +179,17 @@ def processInputs(
                             tuple_items[key]=1
                             flags=flags|SEQUENCE
                         elif (type_name == 'method' or type_name == 'action'):
-                            if l: meth=key
-                            else: meth=item
+                            if l:
+                                meth = key
+                            else:
+                                meth = item
                         elif (type_name == 'default_method' or type_name == \
                               'default_action'):
                             if not meth:
-                                if l: meth=key
-                                else: meth=item
+                                if l:
+                                    meth = key
+                                else:
+                                    meth = item
                         elif type_name == 'default':
                             flags=flags|DEFAULT
                         elif type_name == 'record':
@@ -182,20 +197,25 @@ def processInputs(
                         elif type_name == 'records':
                             flags=flags|RECORDS
                         elif type_name == 'ignore_empty':
-                            if not item: flags=flags|EMPTY
+                            if not item:
+                                flags = flags | EMPTY
                         elif has_codec(type_name):
                             character_encoding = type_name
 
                         l=key.rfind(':')
-                        if l < 0: break
+                        if l < 0:
+                            break
                         mo=search_type(key,l)
-                        if mo: l = mo.start(0)
-                        else:  l = -1
+                        if mo:
+                            l = mo.start(0)
+                        else:
+                            l = -1
 
 
 
                 # Filter out special names from form:
-                if CGI_name(key) or key[:5]=='HTTP_': continue
+                if CGI_name(key) or key[:5] == 'HTTP_':
+                    continue
 
                 # If the key is tainted, mark it so as well.
                 tainted_key = key
@@ -205,7 +225,8 @@ def processInputs(
                 if flags:
 
                     # skip over empty fields
-                    if flags&EMPTY: continue
+                    if flags & EMPTY:
+                        continue
 
                     #Split the key and its attribute
                     if flags&REC:
@@ -227,14 +248,16 @@ def processInputs(
                     if flags&CONVERTED:
                         try:
                             if character_encoding:
-                                # We have a string with a specified character encoding.
-                                # This gets passed to the converter either as unicode, if it can
-                                # handle it, or crunched back down to latin-1 if it can not.
+                                # We have a string with a specified character
+                                # encoding.  This gets passed to the converter
+                                # either as unicode, if it can handle it, or
+                                # crunched back down to latin-1 if it can not.
                                 item = unicode(item,character_encoding)
                                 if hasattr(converter,'convert_unicode'):
                                     item = converter.convert_unicode(item)
                                 else:
-                                    item = converter(item.encode('iso-8859-15'))
+                                    item = converter(
+                                        item.encode(default_encoding))
                             else:
                                 item=converter(item)
 
@@ -305,7 +328,8 @@ def processInputs(
                                 lastrecord = treclist[-1]
 
                                 if not hasattr(lastrecord, attr):
-                                    if flags&SEQUENCE: tainted = [tainted]
+                                    if flags & SEQUENCE:
+                                        tainted = [tainted]
                                     setattr(lastrecord, attr, tainted)
                                 else:
                                     if flags&SEQUENCE:
@@ -325,7 +349,8 @@ def processInputs(
                                 copyitem = item
 
                                 if not hasattr(lastrecord, attr):
-                                    if flags&SEQUENCE: copyitem = [copyitem]
+                                    if flags & SEQUENCE:
+                                        copyitem = [copyitem]
                                     setattr(lastrecord, attr, copyitem)
                                 else:
                                     if flags&SEQUENCE:
@@ -339,7 +364,8 @@ def processInputs(
                             if not hasattr(x,attr):
                                 #If the attribute does not
                                 #exist, setit
-                                if flags&SEQUENCE: item=[item]
+                                if flags & SEQUENCE:
+                                    item = [item]
                                 setattr(x,attr,item)
                             else:
                                 if flags&SEQUENCE:
@@ -433,37 +459,43 @@ def processInputs(
                             # Create a new record, set its attribute
                             # and put it in the dictionary as a list
                             a = record()
-                            if flags&SEQUENCE: item=[item]
+                            if flags & SEQUENCE:
+                                item = [item]
                             setattr(a,attr,item)
                             mapping_object[key]=[a]
 
                             if tainted:
                                 # Store a tainted copy if necessary
                                 a = record()
-                                if flags&SEQUENCE: tainted = [tainted]
+                                if flags & SEQUENCE:
+                                    tainted = [tainted]
                                 setattr(a, attr, tainted)
                                 tainted_mapping[tainted_key] = [a]
 
                         elif flags&RECORD:
                             # Create a new record, set its attribute
                             # and put it in the dictionary
-                            if flags&SEQUENCE: item=[item]
+                            if flags & SEQUENCE:
+                                item = [item]
                             r = mapping_object[key]=record()
                             setattr(r,attr,item)
 
                             if tainted:
                                 # Store a tainted copy if necessary
-                                if flags&SEQUENCE: tainted = [tainted]
+                                if flags & SEQUENCE:
+                                    tainted = [tainted]
                                 r = tainted_mapping[tainted_key] = record()
                                 setattr(r, attr, tainted)
                         else:
                             # it is not a record or list of records
-                            if flags&SEQUENCE: item=[item]
+                            if flags & SEQUENCE:
+                                item = [item]
                             mapping_object[key]=item
 
                             if tainted:
                                 # Store a tainted copy if necessary
-                                if flags&SEQUENCE: tainted = [tainted]
+                                if flags & SEQUENCE:
+                                    tainted = [tainted]
                                 tainted_mapping[tainted_key] = tainted
 
                 else:
@@ -517,7 +549,8 @@ def processInputs(
             if defaults:
                 for key, value in defaults.items():
                     tainted_key = key
-                    if '<' in key: tainted_key = TaintedString(key)
+                    if '<' in key:
+                        tainted_key = TaintedString(key)
 
                     if not form.has_key(key):
                         # if the form does not have the key,
@@ -596,7 +629,8 @@ def processInputs(
                                             for k, v in \
                                                 defitem.__dict__.items():
                                                 for origitem in l:
-                                                    if not hasattr(origitem, k):
+                                                    if not hasattr(
+                                                            origitem, k):
                                                         missesdefault = 1
                                                         raise NestedLoopExit
                                         except NestedLoopExit:
@@ -609,9 +643,11 @@ def processInputs(
                                     tainted = deepcopy(l)
                                     for defitem in tdefault:
                                         if isinstance(defitem, record):
-                                            for k, v in defitem.__dict__.items():
+                                            for k, v in (
+                                                    defitem.__dict__.items()):
                                                 for origitem in tainted:
-                                                    if not hasattr(origitem, k):
+                                                    if not hasattr(
+                                                                origitem, k):
                                                         setattr(origitem, k, v)
                                         else:
                                             if not defitem in tainted:
@@ -665,7 +701,8 @@ def processInputs(
                     if form.has_key(k):
                         # If the form has the split key get its value
                         tainted_split_key = k
-                        if '<' in k: tainted_split_key = TaintedString(k)
+                        if '<' in k:
+                            tainted_split_key = TaintedString(k)
                         item =form[k]
                         if isinstance(item, record):
                             # if the value is mapped to a record, check if it
@@ -699,7 +736,8 @@ def processInputs(
                     else:
                         # the form does not have the split key
                         tainted_key = key
-                        if '<' in key: tainted_key = TaintedString(key)
+                        if '<' in key:
+                            tainted_key = TaintedString(key)
                         if form.has_key(key):
                             # if it has the original key, get the item
                             # convert it to a tuple
@@ -714,8 +752,10 @@ def processInputs(
         if meth:
             if environ.has_key('PATH_INFO'):
                 path=environ['PATH_INFO']
-                while path[-1:]=='/': path=path[:-1]
-            else: path=''
+                while path[-1:] == '/':
+                    path = path[:-1]
+            else:
+                path = ''
             other['PATH_INFO']=path="%s/%s" % (path,meth)
             self._hacked_path=1
 

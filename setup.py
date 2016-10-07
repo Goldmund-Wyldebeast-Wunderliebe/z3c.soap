@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 import os
 
-version = '0.5.3'
+version = '0.5.3-gww'
 
 setup(name='z3c.soap',
       version=version,
